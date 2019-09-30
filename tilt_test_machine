@@ -1,0 +1,407 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+import serial
+import time
+import struct
+from random import randint
+from datetime import datetime
+
+global ser	#serial communications object
+global DEBUG 	#the programm prints a lot of stuff if DEBUG is true
+global SLEEP	#delay time for answer call back
+
+def reportG110andQuit():
+	reportG110()
+	quit()
+
+def reportG110():
+#algunos son un array y solo presento el primer valor! repasar...
+
+	print "Estado del accionamiento (1 = Listo)  r0002  = {0}".format(readWordValue(2))
+	print "Nivel de acceso de usuario            P0003  = {0}".format(readWordValue(3))
+	print "Modo guardar (0 volátil 1 no volátil) P0014  = {0}".format(readWordValue(14))
+	print "Temperatura del motor (i2t)           r0034  = {0:.2f}".format(readFloatValue(34))
+	print "Valor real Palabra estado1            r0052  = {0:016b} - {0:02X}".format(readWordValue(52))
+	print "Valor real Palabra estado2            r0053  = {0:016b} - {0:02X}".format(readWordValue(53))
+	print "Valor real Palabra mando 1            r0054  = {0:016b} - {0:02X}".format(readWordValue(54))
+	print "Valor real Palabra mando 2            r0055  = {0:016b} - {0:02X}".format(readWordValue(55))
+	print "Estado control del motor              r0056  = {0:016b} - {0:02X}".format(readWordValue(56))
+
+	print "Europa/America del Norte (0 Europa)   P0100  = {0}".format(readWordValue(100))
+	print "Analogue/USS Variant (1 USS)          P0127  = {0}".format(readWordValue(127))
+	print "N°. código real del acumulador        r0200  = {0}".format(readDWordValue(200))
+	print "Potencia nominal convertidor          r0206  = {0:.2f} kW".format(readFloatValue(206))
+	reportFloatArray("Corriente nominal convertidor         r0207  :", 207, 0, 1, "A")
+
+	print "Tensión nominal motor                 P0304  = {0} V".format(readWordValue(304))
+	print "Intensidad nominal motor              P0305  = {0:.2f} A".format(readFloatValue(305))
+	print "Potencia nominal motor                P0307  = {0:.2f} kW".format(readFloatValue(307))
+	print "cosPhi nominal del motor              P0308  = {0:.2f}".format(readFloatValue(308))
+	print "Rendimiento nominal del motor         P0309  = {0:.2f} %".format(readFloatValue(309))
+	print "Frecuencia nominal del motor          P0310  = {0:.2f} Hz".format(readFloatValue(310))
+	print "Velocidad nominal del motor           P0311  = {0} rpm".format(readWordValue(311))
+	print "Deslizamiento nominal                 r0330  = {0:.2f} %".format(readFloatValue(330))
+	print "Reacción temp. I2t en el motor        P0610  = {0}".format(readWordValue(610))
+	print "Constante tiempo I2t del motor        P0611  = {0} s".format(readWordValue(611))
+	print "Selección fuente de ordenes (USS=5)   P0700  = {0}".format(readWordValue(700))
+	reportIntegerArray("Selección de comandos&frec.cna.       P0719  =", 719, 0, 1)
+	print "Fuente Local/Remoto (Inhab=0 USS=2)   P0810  = {0}".format(readWordValue(810))
+	reportIntegerArray("Datos Versión Firmware                r0964  :", 964, 0, 6)
+	print "Selección consigna de frecuencia (USS=5)   P1000  = {0}".format(readWordValue(1000))
+	print "Selección modo de control (lineal=0)   P1300  = {0}".format(readWordValue(1300))
+	print "Reference Frequency                    P2000  = {0:.2f}".format(readFloatValue(2000))
+	print "USS PZD length                         P2012  = {0}".format(readWordValue(2012))
+	print "USS PKW length (127=variable)          P2013  = {0}".format(readWordValue(2013))
+
+def reportIntegerArray(description, param, iFrom, iTo, units=""):
+#read a number of params (all 16 bits words) and generate a string with the results
+	print description
+	for i in range(iFrom, iTo-iFrom+1):
+		print "\t Value {0}:\t{1} ".format(i, readWordValue(param, i))+units
+
+def reportFloatArray(description, param, iFrom, iTo, units=""):
+#read a number of params (all 16 bits words) and generate a string with the results
+	print description
+	for i in range(iFrom, iTo-iFrom+1):
+		print "\t Value {0}:\t{1:.4f} ".format(i, readFloatValue(param, i))+units
+
+
+def sendAndWaitTelegram(telegram):
+#first, adjust the telegram with the length in second byte and cheksum at the end
+#second, send the telegram through ser object
+#third, waits for the answer and return it
+
+	#first
+	# second
+	message('enviado: '+' '.join(format(c, '02x') for c in telegram))
+	ser.write(telegram)
+	#third
+	time.sleep(SLEEP)
+	return waitForTelegram()
+	#rb = [elem.encode("hex") for elem in res]
+
+def waitForTelegram():
+#read 2 bytes to know the length of the telegram and then, read the next bytes
+#return the read bytes
+	header = ser.read(2)
+	message("Telegram header: " + str([elem.encode("hex") for elem in header]))
+	length = ord(header[1])
+	telegram = header + ser.read(length)
+	message("Telegram of length {0}:".format(length) + str([elem.encode("hex") for elem in telegram]))
+	return telegram
+
+def HexByteTelegram(tel, header=""):
+	return header + str([elem.encode("hex") for elem in tel])
+def HexStringTelegram(tel, header=""):
+	return header + ' '.join(format(c, '02x') for c in tel)
+
+def message(msg):
+	if(DEBUG): print msg
+
+def printArrayTelegram(tel):
+	print('Telegram: ' +' '.join(format(c, '02x') for c in tel))
+
+def noFunctionTelegram():
+	global lastWriteTel
+	global lastReadTel
+	tel = bytearray([2,0, 0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0])
+	tel = telegramAdjustBytes(tel, 9)
+	print("NoFunc: " + HexStringTelegram(tel))
+	res = sendAndWaitTelegram(tel)
+	print("NoFuncRes: " + HexByteTelegram(res))
+	lastWriteTel = HexStringTelegram(tel)
+	lastReadTel = HexByteTelegram(res)
+	return _extractWordFromTelegram(res, 7)
+
+def writeWordValue(param, value):
+#returns the value returned in the response telegram
+	global lastWriteTel
+	global lastReadTel
+	tel = telegramEscribirValorWord(param, value)
+	res = sendAndWaitTelegram(tel)
+	lastWriteTel = HexStringTelegram(tel)
+	lastReadTel = HexByteTelegram(res)
+	return _extractWordFromTelegram(res, 7)
+
+def readWordValue(param, ind=0):
+#returns the WORD value returned in the response telegram
+	global lastWriteTel
+	global lastReadTel
+	tel = telegramReadWordValue(param, ind)
+	res = sendAndWaitTelegram(tel)
+	lastWriteTel = HexStringTelegram(tel)
+	lastReadTel = HexByteTelegram(res)
+	return _extractWordFromTelegram(res, 7)
+
+def readDWordValue(param, ind=0):
+#returns the DOUBLE WORD value returned in the response telegram
+	tel = telegramReadWordValue(param, ind)
+	res = sendAndWaitTelegram(tel)
+	return _extractDWordFromTelegram(res, 7)
+
+def readFloatValue(param, ind=0):
+#returns the FLOAT value returned in the response telegram
+	tel = telegramReadFloatValue(param, ind)
+	res = sendAndWaitTelegram(tel)
+	return _extractFloatFromTelegram(res, 7)
+
+def _extractWordFromTelegram(telegram, pos):
+#returns an UNSIGNED SHORT INT value in a response telegram: pos begins in 0
+	byte2 = ord(telegram[pos])
+	byte1 = ord(telegram[pos+1])
+	byteBuffer = bytearray([byte1, byte2])
+	#H is unsigned INT and h is signed INT
+	return struct.unpack('H', byteBuffer)[0]
+
+def _extractDWordFromTelegram(telegram, pos):
+#returns an UNSIGNED INTEGER (32 BITS) value in a response telegram: pos begins in 0
+	byte4 = ord(telegram[pos])
+	byte3 = ord(telegram[pos+1])
+	byte2 = ord(telegram[pos+2])
+	byte1 = ord(telegram[pos+3])
+	byteBuffer = bytearray([byte1, byte2, byte3, byte4])
+	#I is unsigned INT and i is signed INT
+	return struct.unpack('I', byteBuffer)[0]
+
+def _extractFloatFromTelegram(telegram, pos):
+#returns a FLOAT value (4 bytes) value in a response telegram: pos begins in 0
+	byteBuffer = bytearray([ord(telegram[pos+3]), ord(telegram[pos+2]), 
+				ord(telegram[pos+1]), ord(telegram[pos])])
+	return struct.unpack('f', byteBuffer)[0]
+
+def _intToBytes(iValue):
+	return(bytearray([iValue>>8, iValue%256]))
+	
+def _dwordToBytes(dwValue):
+	byteBuffer = bytearray([0, 0, 0, 0])
+	s = struct.pack('i', dwValue)
+	byteBuffer[0] = s[3]
+	byteBuffer[1] = s[2]
+	byteBuffer[2] = s[1]
+	byteBuffer[3] = s[0]
+	return byteBuffer
+	
+def _wordToBytes(wValue):
+	byteBuffer = bytearray([0, 0])
+	s = struct.pack('i', dwValue)
+	byteBuffer[0] = s[3]
+	byteBuffer[1] = s[2]
+	return byteBuffer
+	
+def _floatToBytes(fValue):
+	byteBuffer = bytearray([0, 0, 0, 0])
+	s = struct.pack('f', fValue)
+	byteBuffer[0] = s[3]
+	byteBuffer[1] = s[2]
+	byteBuffer[2] = s[1]
+	byteBuffer[3] = s[0]           
+	return byteBuffer
+
+def telegramAdjustBytes(tel, indexPZD):
+#put controlword and setpoint
+	CWBytes = _intToBytes(controlword)
+	SPBytes = _dwordToBytes(setpoint)
+	tel[indexPZD] = CWBytes[0]; tel[indexPZD+1] = CWBytes[1]
+	tel[indexPZD+2] = SPBytes[0]; tel[indexPZD+3] = SPBytes[1]
+	tel[indexPZD+4] = SPBytes[2]; tel[indexPZD+5] = SPBytes[3]
+	
+#put the length in second byte and checksum at the end
+	tel[1] = len(tel)-2
+	checksum=0
+	for i in range(0,len(tel)-1): #no se puede hacer como con sum en una linea?
+		checksum^=tel[i]
+	tel[len(tel)-1]=checksum
+	return tel
+
+def telegramEscribirValorWord(param, valor, ind=0):
+	message("Escribiendo {0} en: {1} ".format(valor, param))
+	if(param>2000):
+		bytesPosicion = _intToBytes(param-2000)
+		indexHighByte = 0x80
+	else:
+		bytesPosicion = _intToBytes(param)
+		indexHighByte = 0x00
+	bytesValor = _intToBytes(valor)
+	tel = bytearray([2,0, 0, 0x70+bytesPosicion[0], bytesPosicion[1], indexHighByte, ind, bytesValor[0] , bytesValor[1], 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0])
+	return telegramAdjustBytes(tel, 9)
+
+def telegramEscribirValorFloat(posicion, valor):
+#es igual a escribir un DWORD. Rehacer para que use 60 y 70
+	message("Escribiendo {0:.2f} en: {1} ".format(valor, posicion))
+	bytesPosicion = _intToBytes(posicion)
+	bytesValor = _floatToBytes(valor)
+	tel = bytearray([2,0, 0, 0x30+bytesPosicion[0], bytesPosicion[1], 0x00, 0x00, bytesValor[0] , bytesValor[1], bytesValor[2] , bytesValor[3], 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0])
+	return telegramAdjustBytes(tel, 11)
+
+def telegramReadWordValue(param, ind=0):
+#returns the data of the telegram to read a WORD (16 bits) param from G110
+	if(param>2000):
+		bytesParam = _intToBytes(param-2000)
+		indexHighByte = 0x80
+	else:
+		bytesParam = _intToBytes(param)
+		indexHighByte = 0x00
+	tel = bytearray([2,0, 0, 0x60+bytesParam[0], bytesParam[1], indexHighByte, ind, 0x00 , 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0])
+	return telegramAdjustBytes(tel, 7)
+
+def telegramReadFloatValue(param, index):
+	tel = telegramReadWordValue(param, index)
+	return telegramAdjustBytes(tel, 7)
+
+def mirrortelegram():
+	message("Sending MIRROR telegram")
+	tel = bytearray([2,0, 0x40, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0])
+	tel = telegramAdjustBytes(tel)
+	if(sendAndWaitTelegram(tel)==tel):
+		return True
+	else:
+		return False
+
+#Init global variables
+DEBUG = False
+SLEEP = 0.05
+ser = serial.Serial('/dev/ttyUSB0', 
+                   baudrate=9600,
+                   bytesize=serial.EIGHTBITS,
+                   parity=serial.PARITY_EVEN,
+                   stopbits=serial.STOPBITS_ONE,
+                   timeout = 2.0)
+
+controlword = 0x007E
+setpoint = 0x00000000
+numPZD = 4
+USSTimeOff = 5000
+Time1 = 2000
+Time2 = 1000
+Time3 = 20000
+Frequency = 50
+
+lastWriteTel = ""
+lastReadTel = ""
+
+
+def readAndPrint(param):
+	readWordValue(param)
+	printLastTelegrams(str(param))
+
+
+def printLastTelegrams(header):
+	print(header+" "+lastWriteTel+" - "+lastReadTel)
+
+def generalLoop():
+#nothing
+	noFunctionTelegram()
+#read some parameters sending the control word and the setpoint
+	readAndPrint(2120)
+	readAndPrint(3980)
+	readAndPrint(2011)
+	readAndPrint(2012)
+	readAndPrint(2014)
+	readAndPrint(2)
+	readAndPrint(127)
+	readAndPrint(2010)
+	readAndPrint(2013)
+	readAndPrint(2000)
+
+def setUSSTelegramOffTime():
+	for i in range(1, 6):
+		res = writeWordValue(2014, USSTimeOff)
+		print("Aqui")
+		printLastTelegrams
+		if(res==USSTimeOff):
+			break
+		
+
+if(ser.isOpen):
+	message("Serial port opened with success")
+	#message(mirrortelegram())
+	#print readWordValue(3)
+	#print writeWordValue(3,3)
+	#reportG110andQuit()
+	reportG110()
+	print("Puesta en marchar rápida")
+	writeWordValue(10, 1)
+	reportG110()
+	generalLoop()
+	writeWordValue(3900, 1)
+	reportG110()
+	generalLoop()
+	generalLoop()
+	generalLoop()
+
+	#Parametros
+	Frequency = 50
+	Time1 = 10000
+	Time2 = 2000
+	Time3 = 20000
+	Time4 = 20000
+	USSTimeOff = 5000
+	#Comenzar leyendo sin hacer nada más
+	writeWordValue(2012, 4)
+	controlword = 0x0076; setpoint = 0;
+	t1 = datetime.now()
+	print("Empezando: " + str(t1))
+	while(True):
+		generalLoop()
+		milisec = (datetime.now() - t1).total_seconds()*1000
+		if(milisec >= Time1):
+			break;
+		else:
+			print("ms: " + str(milisec))
+	#ACABAR
+	#print("Exiteando: ")
+	#quit()
+	#Comenzar tomando el control 0x0400
+	print("Tomar control: " + str(datetime.now()))
+	controlword = 0x0400; setpoint = 0;
+	generalLoop()
+	setUSSTelegramOffTime()
+	
+	#Habilitar parados 0x47E
+	print("Habilitar: " + str(datetime.now()))
+	controlword = 0x047E; setpoint = 0;
+	t1 = datetime.now()
+	while(True):
+		generalLoop()
+		milisec = (datetime.now() - t1).total_seconds()*1000
+		if(milisec >= Time2):
+			break;
+	#Pasar a poner 0x40000000 en frecuencia
+	print("Meter frecuencia: " + str(datetime.now()))
+	controlword = 0x047e; setpoint = 0x40000000;
+	generalLoop()
+	#Arrancar 0x47F
+	print("Arrancar: " + str(datetime.now()))
+	controlword = 0x047F; setpoint = 0x40000000;
+	t1 = datetime.now()
+	while(True):
+		generalLoop()
+		milisec = (datetime.now() - t1).total_seconds()*1000
+		print("MyTime: " + str(milisec))
+		if(milisec >= Time3):
+			break;
+
+	#Parar 0x47e
+	print("Parar: " + str(datetime.now()))
+	controlword = 0x047E; setpoint = 0x40000000;
+	generalLoop()
+	controlword = 0x047E; setpoint = 0x00000000;
+	generalLoop()
+
+	#Arrancar 0xC7F
+	print("Arrancar al revés: " + str(datetime.now()))
+	controlword = 0x0C7F; setpoint = 0x40000000;
+	t1 = datetime.now()
+	while(True):
+		generalLoop()
+		milisec = (datetime.now() - t1).total_seconds()*1000
+		print("MyTime: " + str(milisec))
+		if(milisec >= Time4):
+			break;
+	
+	print("Fin: " + str(datetime.now()))
+	
+	
+	
+	
+
